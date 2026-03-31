@@ -21,9 +21,10 @@ export function App() {
 
   useEffect(() => {
     const controller = new AbortController();
+    let refreshTimer: ReturnType<typeof setInterval> | null = null;
 
-    async function loadDashboard() {
-      setErrorMessage('');
+    async function loadDashboard(isRefresh = false) {
+      if (!isRefresh) setErrorMessage('');
 
       try {
         const nextBootstrap = await fetchDashboardBootstrap(controller.signal);
@@ -35,27 +36,35 @@ export function App() {
         }
 
         setBootstrap(nextBootstrap);
-        startTransition(() => {
-          setActiveRoleId(initialRole.id);
-          setActiveViewId(initialRole.defaultViewId);
-        });
+        if (!isRefresh) {
+          startTransition(() => {
+            setActiveRoleId(initialRole.id);
+            setActiveViewId(initialRole.defaultViewId);
+          });
+        }
       } catch (error) {
         if (controller.signal.aborted) {
           return;
         }
 
-        const message =
-          error instanceof Error
-            ? error.message
-            : 'Unable to load the dashboard bootstrap payload.';
-        setErrorMessage(message);
+        if (!isRefresh) {
+          const message =
+            error instanceof Error
+              ? error.message
+              : 'Unable to load the dashboard bootstrap payload.';
+          setErrorMessage(message);
+        }
       }
     }
 
     loadDashboard();
 
+    // Auto-refresh every 60 seconds for live data
+    refreshTimer = setInterval(() => loadDashboard(true), 60_000);
+
     return () => {
       controller.abort();
+      if (refreshTimer) clearInterval(refreshTimer);
     };
   }, [refreshKey]);
 
@@ -156,9 +165,16 @@ export function App() {
 
               <div className="top-panel__meta" aria-label="API status">
                 <span className="status-chip">Backend live</span>
-                <span className="status-chip status-chip--muted">
-                  {bootstrap.meta.seeded ? 'Seeded API data' : bootstrap.meta.source}
+                <span className={`status-chip ${bootstrap.meta.seeded ? 'status-chip--muted' : 'status-chip--live'}`}>
+                  {bootstrap.meta.seeded
+                    ? 'Demo data'
+                    : `Live · ${bootstrap.meta.dataSources?.join(', ') ?? bootstrap.meta.source}`}
                 </span>
+                {bootstrap.meta.warning && (
+                  <span className="status-chip status-chip--muted" title={bootstrap.meta.warning}>
+                    Partial fallback
+                  </span>
+                )}
               </div>
             </div>
 

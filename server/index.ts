@@ -1,6 +1,8 @@
 import { createServer, ServerResponse } from 'node:http';
 import { dashboardManifest } from './seed/dashboardManifest.js';
 import { demoData } from './seed/demoData.js';
+import { fetchLiveData } from './seed/liveData.js';
+import type { DataCatalog } from '../src/types.js';
 
 const apiPort = Number(process.env.API_PORT ?? 4174);
 
@@ -14,6 +16,10 @@ function sendJson(response: ServerResponse, statusCode: number, payload: unknown
   });
   response.end(JSON.stringify(payload));
 }
+
+// Cache the last successful live data fetch
+let cachedLiveData: DataCatalog | null = null;
+let lastFetchError: string | null = null;
 
 const server = createServer((request, response) => {
   if (!request.url) {
@@ -38,22 +44,50 @@ const server = createServer((request, response) => {
       service: 'adaptive-role-dashboard-api',
       status: 'ok',
       timestamp: new Date().toISOString(),
+      liveData: cachedLiveData !== null,
+      lastError: lastFetchError,
     });
     return;
   }
 
   if (request.method === 'GET' && url.pathname === '/api/dashboard/bootstrap') {
-    sendJson(response, 200, {
-      data: demoData,
-      manifest: dashboardManifest,
-      meta: {
-        environment: process.env.NODE_ENV ?? 'development',
-        generatedAt: new Date().toISOString(),
-        roleCount: Object.keys(dashboardManifest.roles).length,
-        seeded: true,
-        source: 'backend-api',
-      },
-    });
+    fetchLiveData()
+      .then((liveData) => {
+        cachedLiveData = liveData;
+        lastFetchError = null;
+        console.log(`[${new Date().toISOString()}] Live data fetched successfully`);
+        sendJson(response, 200, {
+          data: liveData,
+          manifest: dashboardManifest,
+          meta: {
+            environment: process.env.NODE_ENV ?? 'development',
+            generatedAt: new Date().toISOString(),
+            roleCount: Object.keys(dashboardManifest.roles).length,
+            seeded: false,
+            source: 'live-api',
+            dataSources: ['CoinGecko', 'GitHub', 'HackerNews'],
+          },
+        });
+      })
+      .catch((error) => {
+        const message = error instanceof Error ? error.message : 'Unknown error';
+        lastFetchError = message;
+        console.warn(`[${new Date().toISOString()}] Live data fetch failed: ${message}`);
+        console.log('Falling back to', cachedLiveData ? 'cached live data' : 'demo data');
+        sendJson(response, 200, {
+          data: cachedLiveData ?? demoData,
+          manifest: dashboardManifest,
+          meta: {
+            environment: process.env.NODE_ENV ?? 'development',
+            generatedAt: new Date().toISOString(),
+            roleCount: Object.keys(dashboardManifest.roles).length,
+            seeded: cachedLiveData === null,
+            source: cachedLiveData ? 'cached-live' : 'fallback-demo',
+            dataSources: cachedLiveData ? ['CoinGecko', 'GitHub', 'HackerNews'] : ['demo-seed'],
+            warning: `Live fetch failed: ${message}`,
+          },
+        });
+      });
     return;
   }
 

@@ -8,7 +8,14 @@ const compactFormatter = new Intl.NumberFormat('en-US', {
 const currencyFormatter = new Intl.NumberFormat('en-US', {
   style: 'currency',
   currency: 'USD',
-  maximumFractionDigits: 0,
+  maximumFractionDigits: 2,
+});
+
+const currencyCompactFormatter = new Intl.NumberFormat('en-US', {
+  style: 'currency',
+  currency: 'USD',
+  notation: 'compact',
+  maximumFractionDigits: 1,
 });
 
 export function formatMetricValue(metric: MetricRecord): string {
@@ -17,7 +24,9 @@ export function formatMetricValue(metric: MetricRecord): string {
   }
 
   if (metric.unit === 'currency') {
-    return currencyFormatter.format(metric.value);
+    return metric.value >= 100_000
+      ? currencyCompactFormatter.format(metric.value)
+      : currencyFormatter.format(metric.value);
   }
 
   if (metric.unit === 'days') {

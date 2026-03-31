@@ -221,6 +221,8 @@ export interface DashboardMeta {
   roleCount: number;
   seeded: boolean;
   source: string;
+  dataSources?: string[];
+  warning?: string;
 }
 
 export interface DashboardBootstrap {
