@@ -3,9 +3,10 @@ import type { SpotlightWidget } from '../../types';
 
 interface SpotlightCardProps {
   widget: SpotlightWidget;
+  onAction?: (action: string) => void;
 }
 
-export function SpotlightCard({ widget }: SpotlightCardProps) {
+export function SpotlightCard({ widget, onAction }: SpotlightCardProps) {
   return (
     <WidgetFrame
       title={widget.title}
@@ -23,7 +24,12 @@ export function SpotlightCard({ widget }: SpotlightCardProps) {
 
         <div className="hero-actions">
           {widget.callsToAction.map((action) => (
-            <button className="ghost-button" key={action} type="button">
+            <button
+              className="ghost-button"
+              key={action}
+              onClick={() => onAction?.(action)}
+              type="button"
+            >
               {action}
             </button>
           ))}

@@ -7,7 +7,7 @@ interface CacheEntry<T> {
 }
 
 const cache = new Map<string, CacheEntry<unknown>>();
-const CACHE_TTL = 60_000; // 60 seconds
+const CACHE_TTL = 5_000; // 5 seconds
 
 async function cachedFetch<T>(key: string, fetcher: () => Promise<T>): Promise<T> {
   const entry = cache.get(key) as CacheEntry<T> | undefined;

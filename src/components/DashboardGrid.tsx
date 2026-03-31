@@ -17,6 +17,7 @@ interface DashboardGridProps {
   view: ViewConfig;
   data: DataCatalog;
   query: string;
+  onAction?: (action: string) => void;
 }
 
 function spanClass(widget: DashboardWidget) {
@@ -38,10 +39,11 @@ export function DashboardGrid({
   view,
   data,
   query,
+  onAction,
 }: DashboardGridProps) {
   return (
     <div className="dashboard-grid">
-      {view.widgets.map((widget, index) => {
+      {view.widgets.filter((w) => !(w as any).disabled).map((widget, index) => {
         const style = {
           '--delay': `${index * 50}ms`,
         } as CSSProperties;
@@ -55,6 +57,7 @@ export function DashboardGrid({
                 widget={widget}
                 role={role}
                 metrics={widget.statIds.map((id) => data.metrics[id])}
+                onAction={onAction}
               />
             );
             break;
@@ -119,12 +122,12 @@ export function DashboardGrid({
             );
             break;
           case 'spotlight':
-            content = <SpotlightCard widget={widget} />;
+            content = <SpotlightCard widget={widget} onAction={onAction} />;
             break;
         }
 
         return (
-          <div className={spanClass(widget)} key={widget.id} style={style}>
+          <div className={spanClass(widget)} data-widget-id={widget.id} key={widget.id} style={style}>
             {content}
           </div>
         );

@@ -7,9 +7,10 @@ interface HeroPanelProps {
   widget: HeroWidget;
   role: RoleConfig;
   metrics: MetricRecord[];
+  onAction?: (action: string) => void;
 }
 
-export function HeroPanel({ widget, role, metrics }: HeroPanelProps) {
+export function HeroPanel({ widget, role, metrics, onAction }: HeroPanelProps) {
   return (
     <WidgetFrame
       title={widget.title}
@@ -30,7 +31,12 @@ export function HeroPanel({ widget, role, metrics }: HeroPanelProps) {
           </div>
           <div className="hero-actions" aria-label="Suggested actions">
             {widget.actionLabels.map((action) => (
-              <button className="ghost-button" key={action} type="button">
+              <button
+                className="ghost-button"
+                key={action}
+                onClick={() => onAction?.(action)}
+                type="button"
+              >
                 {action}
               </button>
             ))}

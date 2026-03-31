@@ -186,6 +186,7 @@ export interface ViewConfig {
   title: string;
   summary: string;
   widgets: DashboardWidget[];
+  disabled?: boolean;
 }
 
 export interface RoleConfig {

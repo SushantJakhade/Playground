@@ -1,14 +1,31 @@
 import {
   CSSProperties,
   startTransition,
+  useCallback,
   useDeferredValue,
   useEffect,
   useState,
 } from 'react';
 import { AppSidebar } from './components/AppSidebar';
 import { DashboardGrid } from './components/DashboardGrid';
+import { AdminPanel } from './components/AdminPanel';
 import { fetchDashboardBootstrap } from './lib/api';
-import { DashboardBootstrap, RoleId } from './types';
+import { DashboardBootstrap, RoleId, RoleConfig, ViewConfig } from './types';
+
+const ADMIN_MANAGE_VIEW_ID = '__admin-manage__';
+
+/** Filter out disabled views and widgets for non-admin roles */
+function filterRole(role: RoleConfig): RoleConfig {
+  return {
+    ...role,
+    views: role.views
+      .filter((v) => !v.disabled)
+      .map((v) => ({
+        ...v,
+        widgets: v.widgets.filter((w) => !(w as any).disabled),
+      })),
+  };
+}
 
 export function App() {
   const [bootstrap, setBootstrap] = useState<DashboardBootstrap | null>(null);
@@ -17,7 +34,12 @@ export function App() {
   const [query, setQuery] = useState('');
   const [errorMessage, setErrorMessage] = useState('');
   const [refreshKey, setRefreshKey] = useState(0);
+  const [toast, setToast] = useState('');
   const deferredQuery = useDeferredValue(query.trim().toLowerCase());
+
+  const triggerRefresh = useCallback(() => {
+    setRefreshKey((k) => k + 1);
+  }, []);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -60,7 +82,7 @@ export function App() {
     loadDashboard();
 
     // Auto-refresh every 60 seconds for live data
-    refreshTimer = setInterval(() => loadDashboard(true), 60_000);
+    refreshTimer = setInterval(() => loadDashboard(true), 5_000);
 
     return () => {
       controller.abort();
@@ -113,10 +135,16 @@ export function App() {
     );
   }
 
-  const activeRole = manifest.roles[activeRoleId] ?? fallbackRole;
-  const activeView =
-    activeRole.views.find((view) => view.id === activeViewId) ??
-    activeRole.views[0];
+  const isAdmin = activeRoleId === 'admin';
+  // Admin sees full manifest; other roles get disabled items filtered out
+  const activeRole = isAdmin
+    ? (manifest.roles[activeRoleId] ?? fallbackRole)
+    : filterRole(manifest.roles[activeRoleId] ?? fallbackRole);
+
+  const showAdminPanel = isAdmin && activeViewId === ADMIN_MANAGE_VIEW_ID;
+  const activeView = showAdminPanel
+    ? ({ id: ADMIN_MANAGE_VIEW_ID, label: 'Manage', title: 'Role & Permission Manager', summary: 'Control what other roles can see and access.', widgets: [] } as ViewConfig)
+    : (activeRole.views.find((view) => view.id === activeViewId) ?? activeRole.views[0]);
 
   function handleRoleChange(roleId: RoleId) {
     startTransition(() => {
@@ -129,6 +157,146 @@ export function App() {
     startTransition(() => {
       setActiveViewId(viewId);
     });
+  }
+
+  function showToast(msg: string) {
+    setToast(msg);
+    setTimeout(() => setToast(''), 3000);
+  }
+
+  function scrollToWidget(widgetId: string) {
+    requestAnimationFrame(() => {
+      const el = document.querySelector(`[data-widget-id="${widgetId}"]`);
+      if (el) {
+        el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        el.classList.add('widget-highlight');
+        setTimeout(() => el.classList.remove('widget-highlight'), 2000);
+      }
+    });
+  }
+
+  function navigateToView(viewId: string, targetWidget?: string) {
+    startTransition(() => {
+      setActiveViewId(viewId);
+    });
+    if (targetWidget) {
+      setTimeout(() => scrollToWidget(targetWidget), 350);
+    }
+  }
+
+  function exportTableAsCSV(datasetId: string, filename: string) {
+    const rows = data.tables[datasetId];
+    if (!rows || rows.length === 0) { showToast('No data to export'); return; }
+    const keys = Object.keys(rows[0]).filter((k) => k !== 'id');
+    const header = keys.join(',');
+    const body = rows.map((r) => keys.map((k) => `"${r[k]}"`).join(',')).join('\n');
+    const blob = new Blob([header + '\n' + body], { type: 'text/csv' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `${filename}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+    showToast(`Exported ${filename}.csv`);
+  }
+
+  function handleAction(action: string) {
+    switch (action) {
+      // ── Admin Command ──
+      case 'Inspect contracts':
+        navigateToView(ADMIN_MANAGE_VIEW_ID);
+        showToast('Opened role contracts in Manage panel');
+        break;
+      case 'Review drift':
+        navigateToView('command', 'adminTrend');
+        showToast('Scrolled to operational health trend');
+        break;
+      case 'Open queue':
+        navigateToView('command', 'adminFeed');
+        showToast('Scrolled to live exceptions queue');
+        break;
+
+      // ── Admin Governance ──
+      case 'Draft a new role':
+        navigateToView(ADMIN_MANAGE_VIEW_ID);
+        showToast('Opened Manage panel — configure a new role');
+        break;
+      case 'Validate a view':
+        navigateToView(ADMIN_MANAGE_VIEW_ID);
+        showToast('Opened Manage panel — review view status');
+        break;
+      case 'Compare contracts':
+        navigateToView(ADMIN_MANAGE_VIEW_ID);
+        showToast('Opened Manage panel — compare role contracts');
+        break;
+
+      // ── Analyst Signal Desk ──
+      case 'Inspect outliers':
+        scrollToWidget('analystTrend');
+        showToast('Focused on signal quality trend — check outliers');
+        break;
+      case 'Save insight':
+        exportTableAsCSV('modelSegments', 'analyst-segments-insight');
+        break;
+      case 'Share snapshot': {
+        const url = `${window.location.origin}?role=analyst&view=signal-desk`;
+        navigator.clipboard.writeText(url).then(() => {
+          showToast('Snapshot URL copied to clipboard');
+        }).catch(() => {
+          showToast('Snapshot ready — URL: ' + url);
+        });
+        break;
+      }
+
+      // ── Analyst Exploration ──
+      case 'Create watchlist':
+        setQuery('');
+        scrollToWidget('analystExplorationTable');
+        showToast('Scrolled to segment table — use search to build your watchlist');
+        break;
+      case 'Export comparison':
+        exportTableAsCSV('modelSegments', 'analyst-comparison-export');
+        break;
+      case 'Open notebook':
+        navigateToView('signal-desk', 'analystTrend');
+        showToast('Opened Signal Desk trend for notebook reference');
+        break;
+
+      // ── Business Portfolio ──
+      case 'Review priorities':
+        scrollToWidget('businessComparison');
+        showToast('Focused on portfolio contribution priorities');
+        break;
+      case 'Align planning':
+        navigateToView('planning');
+        showToast('Switched to Planning Review');
+        break;
+      case 'Share outlook': {
+        const bizUrl = `${window.location.origin}?role=business&view=portfolio`;
+        navigator.clipboard.writeText(bizUrl).then(() => {
+          showToast('Portfolio outlook URL copied to clipboard');
+        }).catch(() => {
+          showToast('Outlook ready — URL: ' + bizUrl);
+        });
+        break;
+      }
+
+      // ── Business Planning ──
+      case 'Adjust targets':
+        scrollToWidget('businessPlanningTargets');
+        showToast('Focused on planning targets');
+        break;
+      case 'Open risks':
+        scrollToWidget('businessPlanningTable');
+        showToast('Focused on planning ledger — review risk items');
+        break;
+      case 'Publish summary':
+        exportTableAsCSV('initiativeLedger', 'business-planning-summary');
+        break;
+
+      default:
+        showToast(`Action: ${action}`);
+    }
   }
 
   return (
@@ -218,18 +386,39 @@ export function App() {
                   {view.label}
                 </button>
               ))}
+              {isAdmin && (
+                <button
+                  aria-current={activeViewId === ADMIN_MANAGE_VIEW_ID ? 'page' : undefined}
+                  className="tab-button tab-button--admin"
+                  onClick={() => handleViewChange(ADMIN_MANAGE_VIEW_ID)}
+                  type="button"
+                >
+                  Manage
+                </button>
+              )}
             </nav>
           </section>
 
-          <DashboardGrid
-            data={data}
-            manifest={manifest}
-            query={deferredQuery}
-            role={activeRole}
-            view={activeView}
-          />
+          {showAdminPanel ? (
+            <AdminPanel manifest={manifest} onRefresh={triggerRefresh} />
+          ) : (
+            <DashboardGrid
+              data={data}
+              manifest={manifest}
+              query={deferredQuery}
+              role={activeRole}
+              view={activeView}
+              onAction={handleAction}
+            />
+          )}
         </main>
       </div>
+
+      {toast && (
+        <div className="toast" role="status">
+          {toast}
+        </div>
+      )}
     </>
   );
 }
