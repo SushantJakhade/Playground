@@ -16,6 +16,20 @@ interface FileManagerProps {
   onAnalyze: (fileId: number) => void;
 }
 
+const ANALYZABLE_EXTENSIONS = new Set([
+  'csv',
+  'json',
+  'txt',
+  'tsv',
+  'xlsx',
+  'xls',
+  'xlsm',
+  'xlsb',
+  'ods',
+  'pdf',
+  'md',
+]);
+
 function formatSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
@@ -109,6 +123,11 @@ export function FileManager({ token, onAnalyze }: FileManagerProps) {
     }
   }
 
+  function isAnalyzable(filename: string): boolean {
+    const extension = filename.split('.').pop()?.toLowerCase() ?? '';
+    return ANALYZABLE_EXTENSIONS.has(extension);
+  }
+
   return (
     <div className="file-manager">
       <div
@@ -119,7 +138,7 @@ export function FileManager({ token, onAnalyze }: FileManagerProps) {
         onDrop={handleDrop}
       >
         <input
-          accept=".csv,.json,.txt,.xlsx,.pdf"
+          accept=".csv,.json,.txt,.tsv,.xlsx,.xls,.xlsm,.xlsb,.ods,.pdf,.md"
           multiple
           onChange={(e) => e.target.files && uploadFiles(e.target.files)}
           ref={inputRef}
@@ -138,14 +157,14 @@ export function FileManager({ token, onAnalyze }: FileManagerProps) {
             {uploading ? 'Uploading...' : 'Drop files here or click to browse'}
           </p>
           <p className="file-dropzone__hint">
-            Supports CSV, JSON, TXT, XLSX, PDF
+            Supports CSV, JSON, TXT, TSV, Excel, ODS, Markdown, and PDF
           </p>
         </div>
       </div>
 
       {files.length === 0 ? (
         <div className="file-empty">
-          <p>No files uploaded yet. Upload a CSV or JSON file to start analyzing data.</p>
+          <p>No files uploaded yet. Upload company data or documents to store them in SQLite and analyze them live.</p>
         </div>
       ) : (
         <div className="file-table-wrapper">
@@ -161,7 +180,7 @@ export function FileManager({ token, onAnalyze }: FileManagerProps) {
             </thead>
             <tbody>
               {files.map((file) => {
-                const isAnalyzable = file.original_name.endsWith('.csv') || file.original_name.endsWith('.json');
+                const canAnalyze = isAnalyzable(file.original_name);
                 return (
                   <tr key={file.id}>
                     <td>
@@ -177,7 +196,7 @@ export function FileManager({ token, onAnalyze }: FileManagerProps) {
                     <td>{formatDate(file.created_at)}</td>
                     <td>
                       <div className="file-actions">
-                        {isAnalyzable && (
+                        {canAnalyze && (
                           <button
                             className="file-action-btn file-action-btn--analyze"
                             onClick={() => onAnalyze(file.id)}

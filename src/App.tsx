@@ -385,6 +385,13 @@ export function App() {
               </div>
 
               <div className="top-panel__meta" aria-label="API status">
+                <button
+                  className="ghost-button"
+                  onClick={() => handleViewChange(FILES_VIEW_ID)}
+                  type="button"
+                >
+                  Upload Data
+                </button>
                 <span className="status-chip status-chip--user">
                   {session.user.displayName}
                 </span>
@@ -437,6 +444,24 @@ export function App() {
                   {view.label}
                 </button>
               ))}
+              <button
+                aria-current={activeViewId === FILES_VIEW_ID ? 'page' : undefined}
+                className="tab-button"
+                onClick={() => handleViewChange(FILES_VIEW_ID)}
+                type="button"
+              >
+                Files
+              </button>
+              {(analysisFileId !== null || showAnalysis) && (
+                <button
+                  aria-current={activeViewId === ANALYSIS_VIEW_ID ? 'page' : undefined}
+                  className="tab-button"
+                  onClick={() => handleViewChange(ANALYSIS_VIEW_ID)}
+                  type="button"
+                >
+                  Analysis
+                </button>
+              )}
               {isAdmin && (
                 <button
                   aria-current={activeViewId === ADMIN_MANAGE_VIEW_ID ? 'page' : undefined}
@@ -452,6 +477,20 @@ export function App() {
 
           {showAdminPanel ? (
             <AdminPanel manifest={manifest} onRefresh={triggerRefresh} />
+          ) : showFiles ? (
+            <FileManager token={session.token} onAnalyze={handleAnalyzeFile} />
+          ) : showAnalysis ? (
+            analysisFileId !== null ? (
+              <DataAnalysis
+                fileId={analysisFileId}
+                onBack={() => handleViewChange(FILES_VIEW_ID)}
+                token={session.token}
+              />
+            ) : (
+              <div className="file-empty">
+                <p>Select a file from the Files tab to start analysis.</p>
+              </div>
+            )
           ) : (
             <DashboardGrid
               data={data}

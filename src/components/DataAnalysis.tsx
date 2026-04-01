@@ -1,5 +1,11 @@
 import { useEffect, useRef, useState } from 'react';
 import * as d3 from 'd3';
+import type {
+  DocumentFileSummary,
+  FileNumericColumnSummary,
+  StoredFileAnalysis,
+  TabularFileSummary,
+} from '../types';
 
 interface Column {
   column_name: string;
@@ -19,19 +25,19 @@ interface FileMeta {
   created_at: string;
 }
 
-interface NumericSummary {
-  column: string;
-  min: number;
-  max: number;
-  mean: number;
-  median: number;
-  count: number;
+function formatDate(iso: string): string {
+  return new Date(`${iso}Z`).toLocaleString();
+}
+
+function formatNumber(value: number): string {
+  return value.toLocaleString(undefined, { maximumFractionDigits: 2 });
 }
 
 export function DataAnalysis({ token, fileId, onBack }: AnalysisProps) {
   const [columns, setColumns] = useState<Column[]>([]);
   const [rows, setRows] = useState<Record<string, unknown>[]>([]);
   const [fileMeta, setFileMeta] = useState<FileMeta | null>(null);
+  const [analysis, setAnalysis] = useState<StoredFileAnalysis | null>(null);
   const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState<'overview' | 'table' | 'charts'>('overview');
   const [searchQuery, setSearchQuery] = useState('');
@@ -41,12 +47,21 @@ export function DataAnalysis({ token, fileId, onBack }: AnalysisProps) {
     Promise.all([
       fetch(`/api/files/${fileId}`, { headers: { Authorization: `Bearer ${token}` } }).then((r) => r.json()),
       fetch(`/api/files/${fileId}/data`, { headers: { Authorization: `Bearer ${token}` } }).then((r) => r.json()),
+      fetch(`/api/files/${fileId}/analysis`, { headers: { Authorization: `Bearer ${token}` } }).then((r) => r.json()),
     ])
-      .then(([detail, data]) => {
+      .then(([detail, data, analysisResponse]) => {
         if (detail.ok) setFileMeta(detail.file);
         if (data.ok) {
           setColumns(data.columns);
           setRows(data.rows);
+        } else {
+          setColumns([]);
+          setRows([]);
+        }
+        if (analysisResponse.ok) {
+          setAnalysis(analysisResponse.analysis);
+        } else {
+          setAnalysis(null);
         }
       })
       .catch(() => {})
@@ -62,29 +77,45 @@ export function DataAnalysis({ token, fileId, onBack }: AnalysisProps) {
     );
   }
 
-  const numericCols = columns.filter((c) => c.column_type === 'number');
-  const textCols = columns.filter((c) => c.column_type === 'text');
+  const tabularSummary =
+    analysis?.summary.kind === 'tabular'
+      ? (analysis.summary as TabularFileSummary)
+      : null;
+  const documentSummary =
+    analysis?.summary.kind === 'document'
+      ? (analysis.summary as DocumentFileSummary)
+      : null;
+  const binarySummary = analysis?.summary.kind === 'binary' ? analysis.summary : null;
 
-  const numericSummaries: NumericSummary[] = numericCols.map((col) => {
+  const numericCols = columns.filter((c) => c.column_type === 'number');
+
+  const fallbackNumericSummaries: FileNumericColumnSummary[] = numericCols.map((col) => {
     const values = rows.map((r) => Number(r[col.column_name])).filter((v) => !isNaN(v));
-    const sorted = [...values].sort((a, b) => a - b);
     return {
       column: col.column_name,
       min: d3.min(values) ?? 0,
       max: d3.max(values) ?? 0,
       mean: d3.mean(values) ?? 0,
-      median: sorted.length > 0 ? sorted[Math.floor(sorted.length / 2)] : 0,
+      median: values.length > 0 ? d3.median(values) ?? 0 : 0,
       count: values.length,
+      nullCount: rows.length - values.length,
     };
   });
 
+  const numericSummaries = tabularSummary?.numericColumns.length
+    ? tabularSummary.numericColumns
+    : fallbackNumericSummaries;
+
   const filteredRows = searchQuery
     ? rows.filter((row) =>
-        Object.values(row).some((v) =>
-          String(v).toLowerCase().includes(searchQuery.toLowerCase())
-        )
+        Object.values(row).some((value) =>
+          String(value).toLowerCase().includes(searchQuery.toLowerCase()),
+        ),
       )
     : rows;
+
+  const overviewRowCount = tabularSummary?.rowCount ?? rows.length;
+  const overviewColumnCount = tabularSummary?.columnCount ?? columns.length;
 
   return (
     <div className="analysis">
@@ -95,8 +126,8 @@ export function DataAnalysis({ token, fileId, onBack }: AnalysisProps) {
         <div>
           <h2 className="analysis__title">{fileMeta?.original_name ?? `File #${fileId}`}</h2>
           <p className="analysis__meta">
-            {rows.length} rows, {columns.length} columns
-            {fileMeta && ` — uploaded by ${fileMeta.uploaded_by}`}
+            {analysis?.fileKind ? `${analysis.fileKind} analysis` : 'File analysis'}
+            {fileMeta && ` • uploaded by ${fileMeta.uploaded_by} • ${formatDate(fileMeta.created_at)}`}
           </p>
         </div>
       </div>
@@ -104,7 +135,7 @@ export function DataAnalysis({ token, fileId, onBack }: AnalysisProps) {
       <div className="analysis__tabs">
         {(['overview', 'table', 'charts'] as const).map((tab) => (
           <button
-            className={`tab-button ${activeTab === tab ? '' : ''}`}
+            className="tab-button"
             aria-current={activeTab === tab ? 'page' : undefined}
             key={tab}
             onClick={() => setActiveTab(tab)}
@@ -115,28 +146,50 @@ export function DataAnalysis({ token, fileId, onBack }: AnalysisProps) {
         ))}
       </div>
 
+      {analysis && analysis.parseStatus !== 'parsed' && (
+        <div className={`analysis__status analysis__status--${analysis.parseStatus}`}>
+          <strong>Status:</strong> {analysis.parseStatus}
+          {binarySummary && ` • ${binarySummary.message}`}
+        </div>
+      )}
+
       {activeTab === 'overview' && (
         <div className="analysis__overview">
           <div className="analysis__stats-grid">
             <div className="analysis__stat-card">
-              <span className="analysis__stat-label">Total Rows</span>
-              <span className="analysis__stat-value">{rows.length.toLocaleString()}</span>
+              <span className="analysis__stat-label">Rows</span>
+              <span className="analysis__stat-value">{overviewRowCount.toLocaleString()}</span>
             </div>
             <div className="analysis__stat-card">
               <span className="analysis__stat-label">Columns</span>
-              <span className="analysis__stat-value">{columns.length}</span>
+              <span className="analysis__stat-value">{overviewColumnCount.toLocaleString()}</span>
             </div>
             <div className="analysis__stat-card">
-              <span className="analysis__stat-label">Numeric Fields</span>
-              <span className="analysis__stat-value">{numericCols.length}</span>
+              <span className="analysis__stat-label">Parse Status</span>
+              <span className="analysis__stat-value">{analysis?.parseStatus ?? 'unknown'}</span>
             </div>
             <div className="analysis__stat-card">
-              <span className="analysis__stat-label">Text Fields</span>
-              <span className="analysis__stat-value">{textCols.length}</span>
+              <span className="analysis__stat-label">Generated</span>
+              <span className="analysis__stat-value">
+                {analysis ? formatDate(analysis.generatedAt) : 'Not available'}
+              </span>
             </div>
           </div>
 
-          {numericSummaries.length > 0 && (
+          {analysis?.insights.length ? (
+            <div className="analysis__insights">
+              <h3 className="analysis__section-title">Live Insights</h3>
+              <div className="analysis__insight-grid">
+                {analysis.insights.map((insight) => (
+                  <article className="analysis__insight-card" key={insight}>
+                    <p>{insight}</p>
+                  </article>
+                ))}
+              </div>
+            </div>
+          ) : null}
+
+          {tabularSummary && numericSummaries.length > 0 && (
             <>
               <h3 className="analysis__section-title">Numeric Summary</h3>
               <div className="file-table-wrapper">
@@ -152,14 +205,14 @@ export function DataAnalysis({ token, fileId, onBack }: AnalysisProps) {
                     </tr>
                   </thead>
                   <tbody>
-                    {numericSummaries.map((s) => (
-                      <tr key={s.column}>
-                        <td><strong>{s.column}</strong></td>
-                        <td style={{ textAlign: 'right' }}>{s.min.toLocaleString(undefined, { maximumFractionDigits: 2 })}</td>
-                        <td style={{ textAlign: 'right' }}>{s.max.toLocaleString(undefined, { maximumFractionDigits: 2 })}</td>
-                        <td style={{ textAlign: 'right' }}>{s.mean.toLocaleString(undefined, { maximumFractionDigits: 2 })}</td>
-                        <td style={{ textAlign: 'right' }}>{s.median.toLocaleString(undefined, { maximumFractionDigits: 2 })}</td>
-                        <td style={{ textAlign: 'right' }}>{s.count.toLocaleString()}</td>
+                    {numericSummaries.map((summary) => (
+                      <tr key={summary.column}>
+                        <td><strong>{summary.column}</strong></td>
+                        <td style={{ textAlign: 'right' }}>{formatNumber(summary.min)}</td>
+                        <td style={{ textAlign: 'right' }}>{formatNumber(summary.max)}</td>
+                        <td style={{ textAlign: 'right' }}>{formatNumber(summary.mean)}</td>
+                        <td style={{ textAlign: 'right' }}>{formatNumber(summary.median)}</td>
+                        <td style={{ textAlign: 'right' }}>{summary.count.toLocaleString()}</td>
                       </tr>
                     ))}
                   </tbody>
@@ -168,36 +221,30 @@ export function DataAnalysis({ token, fileId, onBack }: AnalysisProps) {
             </>
           )}
 
-          {textCols.length > 0 && (
+          {tabularSummary?.textColumns.length ? (
             <>
               <h3 className="analysis__section-title">Text Column Distribution</h3>
               <div className="analysis__distributions">
-                {textCols.slice(0, 6).map((col) => {
-                  const freq: Record<string, number> = {};
-                  for (const row of rows) {
-                    const val = String(row[col.column_name] ?? '');
-                    freq[val] = (freq[val] ?? 0) + 1;
-                  }
-                  const top = Object.entries(freq)
-                    .sort((a, b) => b[1] - a[1])
-                    .slice(0, 5);
-                  const maxCount = top[0]?.[1] ?? 1;
+                {tabularSummary.textColumns.slice(0, 6).map((column) => {
+                  const maxCount = column.topValues[0]?.count ?? 1;
 
                   return (
-                    <div className="analysis__dist-card" key={col.column_name}>
-                      <h4>{col.column_name}</h4>
-                      <p className="analysis__dist-unique">{Object.keys(freq).length} unique values</p>
+                    <div className="analysis__dist-card" key={column.column}>
+                      <h4>{column.column}</h4>
+                      <p className="analysis__dist-unique">{column.uniqueCount} unique values</p>
                       <div className="analysis__dist-bars">
-                        {top.map(([val, count]) => (
-                          <div className="analysis__dist-row" key={val}>
-                            <span className="analysis__dist-label" title={val}>{val || '(empty)'}</span>
+                        {column.topValues.map((value) => (
+                          <div className="analysis__dist-row" key={`${column.column}-${value.value}`}>
+                            <span className="analysis__dist-label" title={value.value}>
+                              {value.value || '(empty)'}
+                            </span>
                             <div className="analysis__dist-bar-track">
                               <div
                                 className="analysis__dist-bar-fill"
-                                style={{ width: `${(count / maxCount) * 100}%` }}
+                                style={{ width: `${(value.count / maxCount) * 100}%` }}
                               />
                             </div>
-                            <span className="analysis__dist-count">{count}</span>
+                            <span className="analysis__dist-count">{value.count}</span>
                           </div>
                         ))}
                       </div>
@@ -206,47 +253,105 @@ export function DataAnalysis({ token, fileId, onBack }: AnalysisProps) {
                 })}
               </div>
             </>
+          ) : null}
+
+          {documentSummary && (
+            <>
+              <h3 className="analysis__section-title">Document Summary</h3>
+              <div className="analysis__document-grid">
+                <div className="analysis__document-card">
+                  <span className="analysis__stat-label">Words</span>
+                  <strong>{documentSummary.wordCount.toLocaleString()}</strong>
+                </div>
+                <div className="analysis__document-card">
+                  <span className="analysis__stat-label">Lines</span>
+                  <strong>{documentSummary.lineCount.toLocaleString()}</strong>
+                </div>
+                <div className="analysis__document-card">
+                  <span className="analysis__stat-label">Paragraphs</span>
+                  <strong>{documentSummary.paragraphCount.toLocaleString()}</strong>
+                </div>
+                <div className="analysis__document-card">
+                  <span className="analysis__stat-label">Pages</span>
+                  <strong>{documentSummary.pageCount?.toLocaleString() ?? 'N/A'}</strong>
+                </div>
+              </div>
+
+              {documentSummary.topKeywords.length > 0 && (
+                <div className="analysis__keywords">
+                  {documentSummary.topKeywords.map((keyword) => (
+                    <span className="analysis__keyword-chip" key={keyword.term}>
+                      {keyword.term} · {keyword.count}
+                    </span>
+                  ))}
+                </div>
+              )}
+
+              {documentSummary.preview && (
+                <div className="analysis__preview-card">
+                  <h4>Extracted Preview</h4>
+                  <p>{documentSummary.preview}</p>
+                </div>
+              )}
+            </>
           )}
         </div>
       )}
 
       {activeTab === 'table' && (
         <div className="analysis__table-view">
-          <input
-            className="analysis__search"
-            onChange={(e) => setSearchQuery(e.target.value)}
-            placeholder="Search rows..."
-            type="search"
-            value={searchQuery}
-          />
-          <div className="file-table-wrapper">
-            <table className="file-table">
-              <thead>
-                <tr>
-                  <th>#</th>
-                  {columns.map((col) => (
-                    <th key={col.column_name} style={{ textAlign: col.column_type === 'number' ? 'right' : 'left' }}>
-                      {col.column_name}
-                    </th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {filteredRows.slice(0, 200).map((row, i) => (
-                  <tr key={i}>
-                    <td style={{ color: 'var(--muted)' }}>{i + 1}</td>
-                    {columns.map((col) => (
-                      <td key={col.column_name} style={{ textAlign: col.column_type === 'number' ? 'right' : 'left' }}>
-                        {String(row[col.column_name] ?? '')}
-                      </td>
+          {rows.length > 0 ? (
+            <>
+              <input
+                className="analysis__search"
+                onChange={(e) => setSearchQuery(e.target.value)}
+                placeholder="Search rows..."
+                type="search"
+                value={searchQuery}
+              />
+              <div className="file-table-wrapper">
+                <table className="file-table">
+                  <thead>
+                    <tr>
+                      <th>#</th>
+                      {columns.map((col) => (
+                        <th
+                          key={col.column_name}
+                          style={{ textAlign: col.column_type === 'number' ? 'right' : 'left' }}
+                        >
+                          {col.column_name}
+                        </th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {filteredRows.slice(0, 200).map((row, index) => (
+                      <tr key={index}>
+                        <td style={{ color: 'var(--muted)' }}>{index + 1}</td>
+                        {columns.map((col) => (
+                          <td
+                            key={col.column_name}
+                            style={{ textAlign: col.column_type === 'number' ? 'right' : 'left' }}
+                          >
+                            {String(row[col.column_name] ?? '')}
+                          </td>
+                        ))}
+                      </tr>
                     ))}
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-          {filteredRows.length > 200 && (
-            <p className="analysis__truncation">Showing 200 of {filteredRows.length} rows</p>
+                  </tbody>
+                </table>
+              </div>
+              {filteredRows.length > 200 && (
+                <p className="analysis__truncation">Showing 200 of {filteredRows.length} rows</p>
+              )}
+            </>
+          ) : analysis?.extractedText ? (
+            <div className="analysis__preview-card">
+              <h4>Extracted Text</h4>
+              <pre className="analysis__document-text">{analysis.extractedText}</pre>
+            </div>
+          ) : (
+            <p className="file-empty">No row-level data is available for this file.</p>
           )}
         </div>
       )}
@@ -270,24 +375,21 @@ export function DataAnalysis({ token, fileId, onBack }: AnalysisProps) {
   );
 }
 
-// ── Mini bar chart using D3 ──
-
 function BarChart({ column, rows }: { column: string; rows: Record<string, unknown>[] }) {
   const svgRef = useRef<SVGSVGElement>(null);
 
   useEffect(() => {
     if (!svgRef.current) return;
 
-    const values = rows.map((r) => Number(r[column])).filter((v) => !isNaN(v));
+    const values = rows.map((row) => Number(row[column])).filter((value) => !isNaN(value));
     if (values.length === 0) return;
 
     const width = 400;
     const height = 200;
     const margin = { top: 20, right: 20, bottom: 40, left: 60 };
-    const innerW = width - margin.left - margin.right;
-    const innerH = height - margin.top - margin.bottom;
+    const innerWidth = width - margin.left - margin.right;
+    const innerHeight = height - margin.top - margin.bottom;
 
-    // Create histogram bins
     const binGenerator = d3.bin().thresholds(20);
     const bins = binGenerator(values);
 
@@ -295,40 +397,42 @@ function BarChart({ column, rows }: { column: string; rows: Record<string, unkno
     svg.selectAll('*').remove();
     svg.attr('viewBox', `0 0 ${width} ${height}`);
 
-    const g = svg.append('g').attr('transform', `translate(${margin.left},${margin.top})`);
+    const group = svg
+      .append('g')
+      .attr('transform', `translate(${margin.left},${margin.top})`);
 
     const x = d3.scaleLinear()
       .domain([bins[0]?.x0 ?? 0, bins[bins.length - 1]?.x1 ?? 1])
-      .range([0, innerW]);
+      .range([0, innerWidth]);
 
     const y = d3.scaleLinear()
-      .domain([0, d3.max(bins, (d) => d.length) ?? 1])
+      .domain([0, d3.max(bins, (bin) => bin.length) ?? 1])
       .nice()
-      .range([innerH, 0]);
+      .range([innerHeight, 0]);
 
-    g.selectAll('rect')
+    group.selectAll('rect')
       .data(bins)
       .join('rect')
-      .attr('x', (d) => x(d.x0 ?? 0) + 1)
-      .attr('y', (d) => y(d.length))
-      .attr('width', (d) => Math.max(0, x(d.x1 ?? 0) - x(d.x0 ?? 0) - 2))
-      .attr('height', (d) => innerH - y(d.length))
+      .attr('x', (bin) => x(bin.x0 ?? 0) + 1)
+      .attr('y', (bin) => y(bin.length))
+      .attr('width', (bin) => Math.max(0, x(bin.x1 ?? 0) - x(bin.x0 ?? 0) - 2))
+      .attr('height', (bin) => innerHeight - y(bin.length))
       .attr('fill', 'var(--accent)')
       .attr('rx', 2)
       .attr('opacity', 0.8);
 
-    g.append('g')
-      .attr('transform', `translate(0,${innerH})`)
+    group.append('g')
+      .attr('transform', `translate(0,${innerHeight})`)
       .call(d3.axisBottom(x).ticks(5))
       .selectAll('text')
       .style('fill', 'var(--muted)');
 
-    g.append('g')
+    group.append('g')
       .call(d3.axisLeft(y).ticks(4))
       .selectAll('text')
       .style('fill', 'var(--muted)');
 
-    g.selectAll('.domain, .tick line').attr('stroke', 'var(--border-strong)');
+    group.selectAll('.domain, .tick line').attr('stroke', 'var(--border-strong)');
   }, [column, rows]);
 
   return (

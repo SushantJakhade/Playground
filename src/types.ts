@@ -232,6 +232,83 @@ export interface DashboardBootstrap {
   meta: DashboardMeta;
 }
 
+// ── File Analysis ──
+
+export type FileParseStatus = 'parsed' | 'empty' | 'unsupported' | 'error';
+
+export type FileDataKind = 'tabular' | 'document' | 'binary';
+
+export interface FileKeywordSummary {
+  term: string;
+  count: number;
+}
+
+export interface FileTextValueSummary {
+  value: string;
+  count: number;
+}
+
+export interface FileNumericColumnSummary {
+  column: string;
+  min: number;
+  max: number;
+  mean: number;
+  median: number;
+  count: number;
+  nullCount: number;
+}
+
+export interface FileTextColumnSummary {
+  column: string;
+  uniqueCount: number;
+  nullCount: number;
+  topValues: FileTextValueSummary[];
+}
+
+export interface TabularFileSummary {
+  kind: 'tabular';
+  rowCount: number;
+  columnCount: number;
+  numericColumnCount: number;
+  textColumnCount: number;
+  missingCellCount: number;
+  sheetNames: string[];
+  numericColumns: FileNumericColumnSummary[];
+  textColumns: FileTextColumnSummary[];
+}
+
+export interface DocumentFileSummary {
+  kind: 'document';
+  characterCount: number;
+  wordCount: number;
+  lineCount: number;
+  paragraphCount: number;
+  pageCount?: number;
+  preview: string;
+  topKeywords: FileKeywordSummary[];
+  sampledNumbers: string[];
+}
+
+export interface BinaryFileSummary {
+  kind: 'binary';
+  message: string;
+}
+
+export type FileAnalysisSummary =
+  | TabularFileSummary
+  | DocumentFileSummary
+  | BinaryFileSummary;
+
+export interface StoredFileAnalysis {
+  fileId: number;
+  fileKind: FileDataKind;
+  parseStatus: FileParseStatus;
+  summary: FileAnalysisSummary;
+  insights: string[];
+  extractedText: string | null;
+  generatedAt: string;
+}
+
 // ── Auth ──
 
 export interface AuthUser {

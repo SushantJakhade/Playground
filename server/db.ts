@@ -1,6 +1,7 @@
 import Database from 'better-sqlite3';
 import { join } from 'node:path';
 import { existsSync, readFileSync } from 'node:fs';
+import type { FileAnalysisSummary, FileDataKind, FileParseStatus, StoredFileAnalysis } from '../src/types.js';
 
 const DB_PATH = join(import.meta.dirname, 'dashboard.db');
 const USERS_JSON = join(import.meta.dirname, 'users.json');
@@ -49,6 +50,17 @@ db.exec(`
     file_id INTEGER NOT NULL,
     column_name TEXT NOT NULL,
     column_type TEXT NOT NULL DEFAULT 'text',
+    FOREIGN KEY (file_id) REFERENCES files(id) ON DELETE CASCADE
+  );
+
+  CREATE TABLE IF NOT EXISTS file_analysis (
+    file_id INTEGER PRIMARY KEY,
+    file_kind TEXT NOT NULL,
+    parse_status TEXT NOT NULL,
+    summary_json TEXT NOT NULL,
+    insights_json TEXT NOT NULL,
+    extracted_text TEXT,
+    generated_at TEXT DEFAULT (datetime('now')),
     FOREIGN KEY (file_id) REFERENCES files(id) ON DELETE CASCADE
   );
 `);
@@ -183,6 +195,82 @@ export function getFileSummary(fileId: number) {
   const rowCount = (db.prepare('SELECT COUNT(*) as count FROM parsed_data WHERE file_id = ?').get(fileId) as any).count;
   const columns = getFileColumns(fileId);
   return { rowCount, columns };
+}
+
+// ── File analysis queries ──
+
+interface DbStoredFileAnalysis {
+  file_id: number;
+  file_kind: FileDataKind;
+  parse_status: FileParseStatus;
+  summary_json: string;
+  insights_json: string;
+  extracted_text: string | null;
+  generated_at: string;
+}
+
+export function upsertFileAnalysis(
+  fileId: number,
+  fileKind: FileDataKind,
+  parseStatus: FileParseStatus,
+  summary: FileAnalysisSummary,
+  insights: string[],
+  extractedText: string | null,
+): StoredFileAnalysis {
+  db.prepare(`
+    INSERT INTO file_analysis (
+      file_id,
+      file_kind,
+      parse_status,
+      summary_json,
+      insights_json,
+      extracted_text,
+      generated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, datetime('now'))
+    ON CONFLICT(file_id) DO UPDATE SET
+      file_kind = excluded.file_kind,
+      parse_status = excluded.parse_status,
+      summary_json = excluded.summary_json,
+      insights_json = excluded.insights_json,
+      extracted_text = excluded.extracted_text,
+      generated_at = datetime('now')
+  `).run(
+    fileId,
+    fileKind,
+    parseStatus,
+    JSON.stringify(summary),
+    JSON.stringify(insights),
+    extractedText,
+  );
+
+  return getFileAnalysis(fileId)!;
+}
+
+export function getFileAnalysis(fileId: number): StoredFileAnalysis | undefined {
+  const row = db.prepare(`
+    SELECT
+      file_id,
+      file_kind,
+      parse_status,
+      summary_json,
+      insights_json,
+      extracted_text,
+      generated_at
+    FROM file_analysis
+    WHERE file_id = ?
+  `).get(fileId) as DbStoredFileAnalysis | undefined;
+
+  if (!row) return undefined;
+
+  return {
+    fileId: row.file_id,
+    fileKind: row.file_kind,
+    parseStatus: row.parse_status,
+    summary: JSON.parse(row.summary_json) as FileAnalysisSummary,
+    insights: JSON.parse(row.insights_json) as string[],
+    extractedText: row.extracted_text,
+    generatedAt: row.generated_at,
+  };
 }
 
 export default db;

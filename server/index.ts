@@ -3,6 +3,7 @@ import { randomBytes } from 'node:crypto';
 import { dashboardManifest } from './seed/dashboardManifest.js';
 import { demoData } from './seed/demoData.js';
 import { fetchLiveData } from './seed/liveData.js';
+import { analyzeUploadedFile } from './fileAnalysis.js';
 import {
   findUserByCredentials,
   findUserByUsername,
@@ -16,6 +17,8 @@ import {
   getParsedRows,
   getFileColumns,
   getFileSummary,
+  getFileAnalysis,
+  upsertFileAnalysis,
   type DbUser,
 } from './db.js';
 import type { DataCatalog, DashboardManifest, AuthSession } from '../src/types.js';
@@ -81,50 +84,6 @@ function readRawBody(request: IncomingMessage): Promise<Buffer> {
   });
 }
 
-// ── CSV / JSON parsing ──
-
-function parseCSV(text: string): { columns: { name: string; type: string }[]; rows: Record<string, unknown>[] } {
-  const lines = text.split('\n').filter((l) => l.trim());
-  if (lines.length === 0) return { columns: [], rows: [] };
-
-  const headers = lines[0].split(',').map((h) => h.trim().replace(/^"|"$/g, ''));
-  const rows: Record<string, unknown>[] = [];
-
-  for (let i = 1; i < lines.length; i++) {
-    const values = lines[i].split(',').map((v) => v.trim().replace(/^"|"$/g, ''));
-    const row: Record<string, unknown> = {};
-    for (let j = 0; j < headers.length; j++) {
-      const val = values[j] ?? '';
-      const num = Number(val);
-      row[headers[j]] = val !== '' && !isNaN(num) ? num : val;
-    }
-    rows.push(row);
-  }
-
-  const columns = headers.map((name) => {
-    const sample = rows.slice(0, 20);
-    const allNumbers = sample.length > 0 && sample.every((r) => typeof r[name] === 'number');
-    return { name, type: allNumbers ? 'number' : 'text' };
-  });
-
-  return { columns, rows };
-}
-
-function parseJSON(text: string): { columns: { name: string; type: string }[]; rows: Record<string, unknown>[] } {
-  const data = JSON.parse(text);
-  const arr = Array.isArray(data) ? data : data.data ?? data.results ?? data.items ?? [data];
-  if (arr.length === 0) return { columns: [], rows: [] };
-
-  const keys = [...new Set(arr.flatMap((item: any) => Object.keys(item)))];
-  const columns = keys.map((name) => {
-    const sample = arr.slice(0, 20);
-    const allNumbers = sample.length > 0 && sample.every((r: any) => typeof r[name] === 'number');
-    return { name, type: allNumbers ? 'number' : 'text' };
-  });
-
-  return { columns, rows: arr };
-}
-
 // ── Multipart parser (simple boundary-based) ──
 
 interface MultipartFile {
@@ -182,6 +141,34 @@ function parseMultipart(body: Buffer, boundary: string): { fields: Record<string
 
 let cachedLiveData: DataCatalog | null = null;
 let lastFetchError: string | null = null;
+
+function canAccessFile(session: AuthSession, roleId: string): boolean {
+  return session.user.roleId === 'admin' || session.user.roleId === roleId;
+}
+
+async function ensureStoredAnalysis(file: {
+  id: number;
+  original_name: string;
+  mime_type: string;
+  content: Buffer;
+}) {
+  const existing = getFileAnalysis(file.id);
+  if (existing) return existing;
+
+  const parsed = await analyzeUploadedFile(file.original_name, file.mime_type, file.content);
+  if (parsed.columns.length > 0 || parsed.rows.length > 0) {
+    insertParsedRows(file.id, parsed.columns, parsed.rows);
+  }
+
+  return upsertFileAnalysis(
+    file.id,
+    parsed.fileKind,
+    parsed.parseStatus,
+    parsed.summary,
+    parsed.insights,
+    parsed.extractedText,
+  );
+}
 
 // ── Server ──
 
@@ -324,21 +311,22 @@ const server = createServer(async (request, response) => {
           file.data
         );
 
-        // Auto-parse CSV and JSON files
-        const ext = file.filename.toLowerCase();
-        if (ext.endsWith('.csv')) {
-          const { columns, rows } = parseCSV(file.data.toString('utf-8'));
-          insertParsedRows(dbFile.id, columns, rows);
-          console.log(`[Files] Parsed ${rows.length} rows from CSV "${file.filename}"`);
-        } else if (ext.endsWith('.json')) {
-          try {
-            const { columns, rows } = parseJSON(file.data.toString('utf-8'));
-            insertParsedRows(dbFile.id, columns, rows);
-            console.log(`[Files] Parsed ${rows.length} rows from JSON "${file.filename}"`);
-          } catch {
-            console.warn(`[Files] Could not parse JSON "${file.filename}" as tabular data`);
-          }
+        const parsed = await analyzeUploadedFile(file.filename, file.contentType, file.data);
+        if (parsed.columns.length > 0 || parsed.rows.length > 0) {
+          insertParsedRows(dbFile.id, parsed.columns, parsed.rows);
         }
+        upsertFileAnalysis(
+          dbFile.id,
+          parsed.fileKind,
+          parsed.parseStatus,
+          parsed.summary,
+          parsed.insights,
+          parsed.extractedText,
+        );
+
+        console.log(
+          `[Files] Parsed "${file.filename}" as ${parsed.fileKind} (${parsed.parseStatus})`,
+        );
 
         results.push(dbFile);
       }
@@ -380,6 +368,10 @@ const server = createServer(async (request, response) => {
       sendJson(response, 404, { ok: false, error: 'File not found.' });
       return;
     }
+    if (!canAccessFile(session, file.role_id)) {
+      sendJson(response, 403, { ok: false, error: 'You do not have access to this file.' });
+      return;
+    }
 
     const summary = getFileSummary(fileId);
     sendJson(response, 200, {
@@ -414,10 +406,45 @@ const server = createServer(async (request, response) => {
       sendJson(response, 404, { ok: false, error: 'File not found.' });
       return;
     }
+    if (!canAccessFile(session, file.role_id)) {
+      sendJson(response, 403, { ok: false, error: 'You do not have access to this file.' });
+      return;
+    }
 
     const columns = getFileColumns(fileId);
     const rows = getParsedRows(fileId);
-    sendJson(response, 200, { ok: true, columns, rows, totalRows: rows.length });
+    if (columns.length === 0 && rows.length === 0) {
+      await ensureStoredAnalysis(file);
+    }
+
+    const finalColumns = getFileColumns(fileId);
+    const finalRows = getParsedRows(fileId);
+    sendJson(response, 200, { ok: true, columns: finalColumns, rows: finalRows, totalRows: finalRows.length });
+    return;
+  }
+
+  // Get persisted analysis for a file
+  const fileAnalysisMatch = url.pathname.match(/^\/api\/files\/(\d+)\/analysis$/);
+  if (request.method === 'GET' && fileAnalysisMatch) {
+    const session = getSessionFromRequest(request);
+    if (!session) {
+      sendJson(response, 401, { ok: false, error: 'Not authenticated.' });
+      return;
+    }
+
+    const fileId = Number(fileAnalysisMatch[1]);
+    const file = getFileById(fileId);
+    if (!file) {
+      sendJson(response, 404, { ok: false, error: 'File not found.' });
+      return;
+    }
+    if (!canAccessFile(session, file.role_id)) {
+      sendJson(response, 403, { ok: false, error: 'You do not have access to this file.' });
+      return;
+    }
+
+    const analysis = await ensureStoredAnalysis(file);
+    sendJson(response, 200, { ok: true, analysis });
     return;
   }
 
@@ -434,6 +461,10 @@ const server = createServer(async (request, response) => {
     const file = getFileById(fileId);
     if (!file) {
       sendJson(response, 404, { ok: false, error: 'File not found.' });
+      return;
+    }
+    if (!canAccessFile(session, file.role_id)) {
+      sendJson(response, 403, { ok: false, error: 'You do not have access to this file.' });
       return;
     }
 
@@ -457,6 +488,16 @@ const server = createServer(async (request, response) => {
     }
 
     const fileId = Number(fileDeleteMatch[1]);
+    const file = getFileById(fileId);
+    if (!file) {
+      sendJson(response, 404, { ok: false, error: 'File not found.' });
+      return;
+    }
+    if (!canAccessFile(session, file.role_id)) {
+      sendJson(response, 403, { ok: false, error: 'You do not have access to this file.' });
+      return;
+    }
+
     const deleted = deleteFile(fileId);
     if (!deleted) {
       sendJson(response, 404, { ok: false, error: 'File not found.' });
