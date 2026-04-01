@@ -10,10 +10,14 @@ import { AppSidebar } from './components/AppSidebar';
 import { DashboardGrid } from './components/DashboardGrid';
 import { AdminPanel } from './components/AdminPanel';
 import { LoginPage } from './components/LoginPage';
+import { FileManager } from './components/FileManager';
+import { DataAnalysis } from './components/DataAnalysis';
 import { fetchDashboardBootstrap } from './lib/api';
 import { DashboardBootstrap, RoleConfig, ViewConfig, AuthSession } from './types';
 
 const ADMIN_MANAGE_VIEW_ID = '__admin-manage__';
+const FILES_VIEW_ID = '__files__';
+const ANALYSIS_VIEW_ID = '__analysis__';
 
 /** Filter out disabled views and widgets for non-admin roles */
 function filterRole(role: RoleConfig): RoleConfig {
@@ -44,6 +48,7 @@ export function App() {
   const [session, setSession] = useState<AuthSession | null>(loadStoredSession);
   const [bootstrap, setBootstrap] = useState<DashboardBootstrap | null>(null);
   const [activeViewId, setActiveViewId] = useState('');
+  const [analysisFileId, setAnalysisFileId] = useState<number | null>(null);
   const [query, setQuery] = useState('');
   const [errorMessage, setErrorMessage] = useState('');
   const [refreshKey, setRefreshKey] = useState(0);
@@ -181,13 +186,29 @@ export function App() {
     : filterRole(manifest.roles[userRoleId] ?? fallbackRole);
 
   const showAdminPanel = isAdmin && activeViewId === ADMIN_MANAGE_VIEW_ID;
-  const activeView = showAdminPanel
-    ? ({ id: ADMIN_MANAGE_VIEW_ID, label: 'Manage', title: 'Role & Permission Manager', summary: 'Control what other roles can see and access.', widgets: [] } as ViewConfig)
+  const showFiles = activeViewId === FILES_VIEW_ID;
+  const showAnalysis = activeViewId === ANALYSIS_VIEW_ID;
+
+  const specialViews: Record<string, ViewConfig> = {
+    [ADMIN_MANAGE_VIEW_ID]: { id: ADMIN_MANAGE_VIEW_ID, label: 'Manage', title: 'Role & Permission Manager', summary: 'Control what other roles can see and access.', widgets: [] },
+    [FILES_VIEW_ID]: { id: FILES_VIEW_ID, label: 'Files', title: 'File Manager', summary: 'Upload, manage, and analyze your data files.', widgets: [] },
+    [ANALYSIS_VIEW_ID]: { id: ANALYSIS_VIEW_ID, label: 'Analysis', title: 'Live Data Analysis', summary: 'Explore and visualize uploaded datasets in real time.', widgets: [] },
+  };
+
+  const activeView = specialViews[activeViewId]
+    ? (specialViews[activeViewId] as ViewConfig)
     : (activeRole.views.find((view) => view.id === activeViewId) ?? activeRole.views[0]);
 
   function handleViewChange(viewId: string) {
     startTransition(() => {
       setActiveViewId(viewId);
+    });
+  }
+
+  function handleAnalyzeFile(fileId: number) {
+    setAnalysisFileId(fileId);
+    startTransition(() => {
+      setActiveViewId(ANALYSIS_VIEW_ID);
     });
   }
 
