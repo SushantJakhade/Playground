@@ -9,8 +9,9 @@ import {
 import { AppSidebar } from './components/AppSidebar';
 import { DashboardGrid } from './components/DashboardGrid';
 import { AdminPanel } from './components/AdminPanel';
+import { LoginPage } from './components/LoginPage';
 import { fetchDashboardBootstrap } from './lib/api';
-import { DashboardBootstrap, RoleId, RoleConfig, ViewConfig } from './types';
+import { DashboardBootstrap, RoleConfig, ViewConfig, AuthSession } from './types';
 
 const ADMIN_MANAGE_VIEW_ID = '__admin-manage__';
 
@@ -27,9 +28,21 @@ function filterRole(role: RoleConfig): RoleConfig {
   };
 }
 
+const SESSION_KEY = 'dashboard_session';
+
+function loadStoredSession(): AuthSession | null {
+  try {
+    const raw = localStorage.getItem(SESSION_KEY);
+    if (!raw) return null;
+    return JSON.parse(raw) as AuthSession;
+  } catch {
+    return null;
+  }
+}
+
 export function App() {
+  const [session, setSession] = useState<AuthSession | null>(loadStoredSession);
   const [bootstrap, setBootstrap] = useState<DashboardBootstrap | null>(null);
-  const [activeRoleId, setActiveRoleId] = useState<RoleId>('');
   const [activeViewId, setActiveViewId] = useState('');
   const [query, setQuery] = useState('');
   const [errorMessage, setErrorMessage] = useState('');
@@ -37,11 +50,34 @@ export function App() {
   const [toast, setToast] = useState('');
   const deferredQuery = useDeferredValue(query.trim().toLowerCase());
 
+  const userRoleId = session?.user.roleId ?? '';
+
+  function handleLogin(newSession: AuthSession) {
+    localStorage.setItem(SESSION_KEY, JSON.stringify(newSession));
+    setSession(newSession);
+    setBootstrap(null);
+    setRefreshKey((k) => k + 1);
+  }
+
+  function handleLogout() {
+    if (session) {
+      fetch('/api/auth/logout', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${session.token}` },
+      }).catch(() => {});
+    }
+    localStorage.removeItem(SESSION_KEY);
+    setSession(null);
+    setBootstrap(null);
+  }
+
   const triggerRefresh = useCallback(() => {
     setRefreshKey((k) => k + 1);
   }, []);
 
   useEffect(() => {
+    if (!session) return;
+
     const controller = new AbortController();
     let refreshTimer: ReturnType<typeof setInterval> | null = null;
 
@@ -59,9 +95,9 @@ export function App() {
 
         setBootstrap(nextBootstrap);
         if (!isRefresh) {
+          const assignedRole = nextBootstrap.manifest.roles[userRoleId] ?? initialRole;
           startTransition(() => {
-            setActiveRoleId(initialRole.id);
-            setActiveViewId(initialRole.defaultViewId);
+            setActiveViewId(assignedRole.defaultViewId);
           });
         }
       } catch (error) {
@@ -81,14 +117,17 @@ export function App() {
 
     loadDashboard();
 
-    // Auto-refresh every 60 seconds for live data
     refreshTimer = setInterval(() => loadDashboard(true), 5_000);
 
     return () => {
       controller.abort();
       if (refreshTimer) clearInterval(refreshTimer);
     };
-  }, [refreshKey]);
+  }, [session, refreshKey]);
+
+  if (!session) {
+    return <LoginPage onLogin={handleLogin} />;
+  }
 
   if (!bootstrap) {
     return (
@@ -135,23 +174,16 @@ export function App() {
     );
   }
 
-  const isAdmin = activeRoleId === 'admin';
-  // Admin sees full manifest; other roles get disabled items filtered out
+  const isAdmin = userRoleId === 'admin';
+  // Each user is locked to their own role. Admin sees full manifest for their role; others get disabled items filtered.
   const activeRole = isAdmin
-    ? (manifest.roles[activeRoleId] ?? fallbackRole)
-    : filterRole(manifest.roles[activeRoleId] ?? fallbackRole);
+    ? (manifest.roles[userRoleId] ?? fallbackRole)
+    : filterRole(manifest.roles[userRoleId] ?? fallbackRole);
 
   const showAdminPanel = isAdmin && activeViewId === ADMIN_MANAGE_VIEW_ID;
   const activeView = showAdminPanel
     ? ({ id: ADMIN_MANAGE_VIEW_ID, label: 'Manage', title: 'Role & Permission Manager', summary: 'Control what other roles can see and access.', widgets: [] } as ViewConfig)
     : (activeRole.views.find((view) => view.id === activeViewId) ?? activeRole.views[0]);
-
-  function handleRoleChange(roleId: RoleId) {
-    startTransition(() => {
-      setActiveRoleId(roleId);
-      setActiveViewId(manifest.roles[roleId].defaultViewId);
-    });
-  }
 
   function handleViewChange(viewId: string) {
     startTransition(() => {
@@ -332,6 +364,12 @@ export function App() {
               </div>
 
               <div className="top-panel__meta" aria-label="API status">
+                <span className="status-chip status-chip--user">
+                  {session.user.displayName}
+                </span>
+                <button className="ghost-button logout-button" onClick={handleLogout} type="button">
+                  Sign out
+                </button>
                 <span className="status-chip">Backend live</span>
                 <span className={`status-chip ${bootstrap.meta.seeded ? 'status-chip--muted' : 'status-chip--live'}`}>
                   {bootstrap.meta.seeded
@@ -358,20 +396,12 @@ export function App() {
             </label>
           </header>
 
-          <section aria-label="Role selector" className="control-row">
+          <section aria-label="View selector" className="control-row">
             <div className="control-group">
-              {roleEntries.map((role) => (
-                <button
-                  aria-pressed={role.id === activeRole.id}
-                  className="segmented-button"
-                  key={role.id}
-                  onClick={() => handleRoleChange(role.id)}
-                  type="button"
-                >
-                  <strong>{role.label}</strong>
-                  <span>{role.summary}</span>
-                </button>
-              ))}
+              <div className="segmented-button segmented-button--locked" aria-pressed="true">
+                <strong>{activeRole.label}</strong>
+                <span>{activeRole.summary}</span>
+              </div>
             </div>
 
             <nav aria-label="View selector" className="view-tabs">

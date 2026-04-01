@@ -1,0 +1,26 @@
+[
+  {
+    "username": "admin",
+    "password": "admin123",
+    "displayName": "System Admin",
+    "roleId": "admin"
+  },
+  {
+    "username": "analyst",
+    "password": "analyst123",
+    "displayName": "Data Analyst",
+    "roleId": "analyst"
+  },
+  {
+    "username": "business",
+    "password": "business123",
+    "displayName": "Business User",
+    "roleId": "business"
+  },
+  {
+    "username": "Sushant Jakhade",
+    "password": "sushant123",
+    "displayName": "Sj bhai ",
+    "roleId": "analyst"
+  }
+]

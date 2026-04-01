@@ -231,3 +231,27 @@ export interface DashboardBootstrap {
   data: DataCatalog;
   meta: DashboardMeta;
 }
+
+// ── Auth ──
+
+export interface AuthUser {
+  username: string;
+  displayName: string;
+  roleId: RoleId;
+}
+
+export interface AuthSession {
+  token: string;
+  user: AuthUser;
+}
+
+export interface LoginRequest {
+  username: string;
+  password: string;
+}
+
+export interface LoginResponse {
+  ok: boolean;
+  session?: AuthSession;
+  error?: string;
+}

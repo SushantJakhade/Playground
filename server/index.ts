@@ -1,10 +1,55 @@
 import { createServer, IncomingMessage, ServerResponse } from 'node:http';
+import { randomBytes } from 'node:crypto';
+import { readFileSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { dashboardManifest } from './seed/dashboardManifest.js';
 import { demoData } from './seed/demoData.js';
 import { fetchLiveData } from './seed/liveData.js';
-import type { DataCatalog, DashboardManifest } from '../src/types.js';
+import type { DataCatalog, DashboardManifest, AuthUser, AuthSession } from '../src/types.js';
 
 const apiPort = Number(process.env.API_PORT ?? 4174);
+
+// ── Auth: File-based user store & sessions ──
+
+interface StoredUser {
+  username: string;
+  password: string;
+  displayName: string;
+  roleId: string;
+}
+
+const USERS_FILE = join(import.meta.dirname, 'users.json');
+
+function loadUsers(): StoredUser[] {
+  try {
+    return JSON.parse(readFileSync(USERS_FILE, 'utf-8'));
+  } catch {
+    return [];
+  }
+}
+
+function saveUsers(users: StoredUser[]) {
+  writeFileSync(USERS_FILE, JSON.stringify(users, null, 2) + '\n');
+}
+
+const activeSessions = new Map<string, AuthSession>();
+
+function createSession(user: StoredUser): AuthSession {
+  const token = randomBytes(32).toString('hex');
+  const session: AuthSession = {
+    token,
+    user: { username: user.username, displayName: user.displayName, roleId: user.roleId },
+  };
+  activeSessions.set(token, session);
+  return session;
+}
+
+function getSessionFromRequest(request: IncomingMessage): AuthSession | null {
+  const auth = request.headers.authorization;
+  if (!auth?.startsWith('Bearer ')) return null;
+  const token = auth.slice(7);
+  return activeSessions.get(token) ?? null;
+}
 
 // Mutable copy of the manifest that admin can modify
 const liveManifest: DashboardManifest = JSON.parse(JSON.stringify(dashboardManifest));
@@ -50,6 +95,95 @@ const server = createServer(async (request, response) => {
   }
 
   const url = new URL(request.url, `http://${request.headers.host ?? '127.0.0.1'}`);
+
+  // ── Auth API: Available roles ──
+  if (request.method === 'GET' && url.pathname === '/api/auth/roles') {
+    const roles = Object.values(liveManifest.roles).map((r) => ({
+      id: r.id,
+      label: r.label,
+      summary: r.summary,
+    }));
+    sendJson(response, 200, { ok: true, roles });
+    return;
+  }
+
+  // ── Auth API: Login ──
+  if (request.method === 'POST' && url.pathname === '/api/auth/login') {
+    try {
+      const body = JSON.parse(await readBody(request));
+      const { username, password } = body;
+      const users = loadUsers();
+      const user = users.find((u) => u.username === username && u.password === password);
+      if (!user) {
+        sendJson(response, 401, { ok: false, error: 'Invalid username or password.' });
+        return;
+      }
+      const session = createSession(user);
+      console.log(`[Auth] User "${username}" logged in (role: ${user.roleId})`);
+      sendJson(response, 200, { ok: true, session });
+    } catch {
+      sendJson(response, 400, { ok: false, error: 'Invalid request body.' });
+    }
+    return;
+  }
+
+  // ── Auth API: Register ──
+  if (request.method === 'POST' && url.pathname === '/api/auth/register') {
+    try {
+      const body = JSON.parse(await readBody(request));
+      const { username, password, displayName, roleId } = body;
+
+      if (!username || !password || !displayName || !roleId) {
+        sendJson(response, 400, { ok: false, error: 'All fields are required.' });
+        return;
+      }
+
+      if (!liveManifest.roles[roleId]) {
+        sendJson(response, 400, { ok: false, error: `Role "${roleId}" does not exist.` });
+        return;
+      }
+
+      const users = loadUsers();
+
+      if (users.some((u) => u.username === username)) {
+        sendJson(response, 409, { ok: false, error: 'Username already taken.' });
+        return;
+      }
+
+      const newUser: StoredUser = { username, password, displayName, roleId };
+      users.push(newUser);
+      saveUsers(users);
+
+      const session = createSession(newUser);
+      console.log(`[Auth] New user "${username}" registered (role: ${roleId})`);
+      sendJson(response, 201, { ok: true, session });
+    } catch {
+      sendJson(response, 400, { ok: false, error: 'Invalid request body.' });
+    }
+    return;
+  }
+
+  // ── Auth API: Logout ──
+  if (request.method === 'POST' && url.pathname === '/api/auth/logout') {
+    const session = getSessionFromRequest(request);
+    if (session) {
+      activeSessions.delete(session.token);
+      console.log(`[Auth] User "${session.user.username}" logged out`);
+    }
+    sendJson(response, 200, { ok: true });
+    return;
+  }
+
+  // ── Auth API: Verify session ──
+  if (request.method === 'GET' && url.pathname === '/api/auth/me') {
+    const session = getSessionFromRequest(request);
+    if (!session) {
+      sendJson(response, 401, { ok: false, error: 'Not authenticated.' });
+      return;
+    }
+    sendJson(response, 200, { ok: true, user: session.user });
+    return;
+  }
 
   if (request.method === 'GET' && url.pathname === '/api/health') {
     sendJson(response, 200, {
