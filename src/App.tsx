@@ -476,7 +476,7 @@ export function App() {
           </section>
 
           {showAdminPanel ? (
-            <AdminPanel manifest={manifest} onRefresh={triggerRefresh} />
+            <AdminPanel manifest={manifest} token={session.token} onRefresh={triggerRefresh} />
           ) : showFiles ? (
             <FileManager token={session.token} onAnalyze={handleAnalyzeFile} />
           ) : showAnalysis ? (

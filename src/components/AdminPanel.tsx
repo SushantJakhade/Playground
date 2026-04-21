@@ -10,10 +10,11 @@ import {
 
 interface AdminPanelProps {
   manifest: DashboardManifest;
+  token: string;
   onRefresh: () => void;
 }
 
-export function AdminPanel({ manifest, onRefresh }: AdminPanelProps) {
+export function AdminPanel({ manifest, token, onRefresh }: AdminPanelProps) {
   const [expandedRole, setExpandedRole] = useState<string | null>(null);
   const [editingRole, setEditingRole] = useState<string | null>(null);
   const [editingView, setEditingView] = useState<string | null>(null);
@@ -30,21 +31,21 @@ export function AdminPanel({ manifest, onRefresh }: AdminPanelProps) {
 
   async function handleToggleView(roleId: string, viewId: string) {
     setSaving(true);
-    await adminToggleView(roleId, viewId);
+    await adminToggleView(token, roleId, viewId);
     onRefresh();
     setSaving(false);
   }
 
   async function handleToggleWidget(roleId: string, viewId: string, widgetId: string) {
     setSaving(true);
-    await adminToggleWidget(roleId, viewId, widgetId);
+    await adminToggleWidget(token, roleId, viewId, widgetId);
     onRefresh();
     setSaving(false);
   }
 
   async function handleSaveRole(roleId: string) {
     setSaving(true);
-    await adminUpdateRole(roleId, { label: editLabel, summary: editSummary });
+    await adminUpdateRole(token, roleId, { label: editLabel, summary: editSummary });
     setEditingRole(null);
     onRefresh();
     setSaving(false);
@@ -52,7 +53,7 @@ export function AdminPanel({ manifest, onRefresh }: AdminPanelProps) {
 
   async function handleSaveView(roleId: string, viewId: string) {
     setSaving(true);
-    await adminUpdateView(roleId, viewId, {
+    await adminUpdateView(token, roleId, viewId, {
       label: editViewLabel,
       title: editViewTitle,
       summary: editViewSummary,
@@ -65,7 +66,7 @@ export function AdminPanel({ manifest, onRefresh }: AdminPanelProps) {
   async function handleReset() {
     if (!confirm('Reset all roles to their original configuration?')) return;
     setSaving(true);
-    await adminResetManifest();
+    await adminResetManifest(token);
     setExpandedRole(null);
     setEditingRole(null);
     setEditingView(null);
