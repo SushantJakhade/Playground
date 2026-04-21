@@ -5,6 +5,8 @@ import { demoData } from './seed/demoData.js';
 import { fetchLiveData } from './seed/liveData.js';
 import { analyzeUploadedFile } from './fileAnalysis.js';
 import {
+  initDatabase,
+  closeDatabase,
   findUserByCredentials,
   findUserByUsername,
   createUser,
@@ -146,21 +148,36 @@ function canAccessFile(session: AuthSession, roleId: string): boolean {
   return session.user.roleId === 'admin' || session.user.roleId === roleId;
 }
 
+function requireAdmin(request: IncomingMessage, response: ServerResponse): AuthSession | null {
+  const session = getSessionFromRequest(request);
+  if (!session) {
+    sendJson(response, 401, { ok: false, error: 'Not authenticated.' });
+    return null;
+  }
+
+  if (session.user.roleId !== 'admin') {
+    sendJson(response, 403, { ok: false, error: 'Admin access required.' });
+    return null;
+  }
+
+  return session;
+}
+
 async function ensureStoredAnalysis(file: {
   id: number;
   original_name: string;
   mime_type: string;
   content: Buffer;
 }) {
-  const existing = getFileAnalysis(file.id);
+  const existing = await getFileAnalysis(file.id);
   if (existing) return existing;
 
   const parsed = await analyzeUploadedFile(file.original_name, file.mime_type, file.content);
   if (parsed.columns.length > 0 || parsed.rows.length > 0) {
-    insertParsedRows(file.id, parsed.columns, parsed.rows);
+    await insertParsedRows(file.id, parsed.columns, parsed.rows);
   }
 
-  return upsertFileAnalysis(
+  return await upsertFileAnalysis(
     file.id,
     parsed.fileKind,
     parsed.parseStatus,
@@ -208,7 +225,7 @@ const server = createServer(async (request, response) => {
     try {
       const body = JSON.parse(await readBody(request));
       const { username, password } = body;
-      const user = findUserByCredentials(username, password);
+      const user = await findUserByCredentials(username, password);
       if (!user) {
         sendJson(response, 401, { ok: false, error: 'Invalid username or password.' });
         return;
@@ -235,12 +252,12 @@ const server = createServer(async (request, response) => {
         sendJson(response, 400, { ok: false, error: `Role "${roleId}" does not exist.` });
         return;
       }
-      if (findUserByUsername(username)) {
+      if (await findUserByUsername(username)) {
         sendJson(response, 409, { ok: false, error: 'Username already taken.' });
         return;
       }
 
-      const user = createUser(username, password, displayName, roleId);
+      const user = await createUser(username, password, displayName, roleId);
       const session = makeSession(user);
       console.log(`[Auth] New user "${username}" registered (role: ${roleId})`);
       sendJson(response, 201, { ok: true, session });
@@ -301,7 +318,7 @@ const server = createServer(async (request, response) => {
       const results = [];
       for (const file of uploadedFiles) {
         const storedName = `${Date.now()}-${randomBytes(4).toString('hex')}-${file.filename}`;
-        const dbFile = insertFile(
+        const dbFile = await insertFile(
           storedName,
           file.filename,
           file.contentType,
@@ -313,9 +330,9 @@ const server = createServer(async (request, response) => {
 
         const parsed = await analyzeUploadedFile(file.filename, file.contentType, file.data);
         if (parsed.columns.length > 0 || parsed.rows.length > 0) {
-          insertParsedRows(dbFile.id, parsed.columns, parsed.rows);
+          await insertParsedRows(dbFile.id, parsed.columns, parsed.rows);
         }
-        upsertFileAnalysis(
+        await upsertFileAnalysis(
           dbFile.id,
           parsed.fileKind,
           parsed.parseStatus,
@@ -348,7 +365,7 @@ const server = createServer(async (request, response) => {
       return;
     }
 
-    const files = session.user.roleId === 'admin' ? getAllFiles() : getFilesByRole(session.user.roleId);
+    const files = session.user.roleId === 'admin' ? await getAllFiles() : await getFilesByRole(session.user.roleId);
     sendJson(response, 200, { ok: true, files });
     return;
   }
@@ -363,7 +380,7 @@ const server = createServer(async (request, response) => {
     }
 
     const fileId = Number(fileDetailMatch[1]);
-    const file = getFileById(fileId);
+    const file = await getFileById(fileId);
     if (!file) {
       sendJson(response, 404, { ok: false, error: 'File not found.' });
       return;
@@ -373,7 +390,7 @@ const server = createServer(async (request, response) => {
       return;
     }
 
-    const summary = getFileSummary(fileId);
+    const summary = await getFileSummary(fileId);
     sendJson(response, 200, {
       ok: true,
       file: {
@@ -401,7 +418,7 @@ const server = createServer(async (request, response) => {
     }
 
     const fileId = Number(fileDataMatch[1]);
-    const file = getFileById(fileId);
+    const file = await getFileById(fileId);
     if (!file) {
       sendJson(response, 404, { ok: false, error: 'File not found.' });
       return;
@@ -411,14 +428,14 @@ const server = createServer(async (request, response) => {
       return;
     }
 
-    const columns = getFileColumns(fileId);
-    const rows = getParsedRows(fileId);
+    const columns = await getFileColumns(fileId);
+    const rows = await getParsedRows(fileId);
     if (columns.length === 0 && rows.length === 0) {
       await ensureStoredAnalysis(file);
     }
 
-    const finalColumns = getFileColumns(fileId);
-    const finalRows = getParsedRows(fileId);
+    const finalColumns = await getFileColumns(fileId);
+    const finalRows = await getParsedRows(fileId);
     sendJson(response, 200, { ok: true, columns: finalColumns, rows: finalRows, totalRows: finalRows.length });
     return;
   }
@@ -433,7 +450,7 @@ const server = createServer(async (request, response) => {
     }
 
     const fileId = Number(fileAnalysisMatch[1]);
-    const file = getFileById(fileId);
+    const file = await getFileById(fileId);
     if (!file) {
       sendJson(response, 404, { ok: false, error: 'File not found.' });
       return;
@@ -458,7 +475,7 @@ const server = createServer(async (request, response) => {
     }
 
     const fileId = Number(fileDownloadMatch[1]);
-    const file = getFileById(fileId);
+    const file = await getFileById(fileId);
     if (!file) {
       sendJson(response, 404, { ok: false, error: 'File not found.' });
       return;
@@ -488,7 +505,7 @@ const server = createServer(async (request, response) => {
     }
 
     const fileId = Number(fileDeleteMatch[1]);
-    const file = getFileById(fileId);
+    const file = await getFileById(fileId);
     if (!file) {
       sendJson(response, 404, { ok: false, error: 'File not found.' });
       return;
@@ -498,7 +515,7 @@ const server = createServer(async (request, response) => {
       return;
     }
 
-    const deleted = deleteFile(fileId);
+    const deleted = await deleteFile(fileId);
     if (!deleted) {
       sendJson(response, 404, { ok: false, error: 'File not found.' });
       return;
@@ -569,6 +586,7 @@ const server = createServer(async (request, response) => {
 
   const toggleViewMatch = url.pathname.match(/^\/api\/admin\/roles\/([^/]+)\/views\/([^/]+)\/toggle$/);
   if (request.method === 'POST' && toggleViewMatch) {
+    if (!requireAdmin(request, response)) return;
     const [, roleId, viewId] = toggleViewMatch;
     const role = liveManifest.roles[roleId];
     if (!role) { sendJson(response, 404, { error: `Role "${roleId}" not found.` }); return; }
@@ -585,6 +603,7 @@ const server = createServer(async (request, response) => {
 
   const toggleWidgetMatch = url.pathname.match(/^\/api\/admin\/roles\/([^/]+)\/views\/([^/]+)\/widgets\/([^/]+)\/toggle$/);
   if (request.method === 'POST' && toggleWidgetMatch) {
+    if (!requireAdmin(request, response)) return;
     const [, roleId, viewId, widgetId] = toggleWidgetMatch;
     const role = liveManifest.roles[roleId];
     if (!role) { sendJson(response, 404, { error: `Role "${roleId}" not found.` }); return; }
@@ -599,6 +618,7 @@ const server = createServer(async (request, response) => {
 
   const updateRoleMatch = url.pathname.match(/^\/api\/admin\/roles\/([^/]+)$/);
   if (request.method === 'PATCH' && updateRoleMatch) {
+    if (!requireAdmin(request, response)) return;
     const [, roleId] = updateRoleMatch;
     const role = liveManifest.roles[roleId];
     if (!role) { sendJson(response, 404, { error: `Role "${roleId}" not found.` }); return; }
@@ -617,6 +637,7 @@ const server = createServer(async (request, response) => {
 
   const updateViewMatch = url.pathname.match(/^\/api\/admin\/roles\/([^/]+)\/views\/([^/]+)$/);
   if (request.method === 'PATCH' && updateViewMatch) {
+    if (!requireAdmin(request, response)) return;
     const [, roleId, viewId] = updateViewMatch;
     const role = liveManifest.roles[roleId];
     if (!role) { sendJson(response, 404, { error: `Role "${roleId}" not found.` }); return; }
@@ -635,6 +656,7 @@ const server = createServer(async (request, response) => {
   }
 
   if (request.method === 'POST' && url.pathname === '/api/admin/reset') {
+    if (!requireAdmin(request, response)) return;
     const fresh: DashboardManifest = JSON.parse(JSON.stringify(dashboardManifest));
     for (const key of Object.keys(liveManifest.roles)) delete liveManifest.roles[key];
     Object.assign(liveManifest, fresh);
@@ -645,11 +667,20 @@ const server = createServer(async (request, response) => {
   sendJson(response, 404, { error: 'Route not found.', path: url.pathname });
 });
 
-server.listen(apiPort, '127.0.0.1', () => {
-  console.log(`Adaptive dashboard API listening at http://127.0.0.1:${apiPort}`);
-});
+// Initialize database then start server
+initDatabase()
+  .then(() => {
+    server.listen(apiPort, '127.0.0.1', () => {
+      console.log(`Adaptive dashboard API listening at http://127.0.0.1:${apiPort}`);
+    });
+  })
+  .catch((err) => {
+    console.error('[DB] Failed to initialize database:', err);
+    process.exit(1);
+  });
 
-function closeServer() {
+async function closeServer() {
+  await closeDatabase();
   server.close(() => process.exit(0));
 }
 
